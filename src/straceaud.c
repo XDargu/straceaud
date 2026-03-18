@@ -57,6 +57,7 @@ Set READ, WRITE, CREATE, MKDIR, DELETE, RENAME;
 Set METADATA, EXEC, PROCESS;
 Set NETWORK_CONNECT, NETWORK_BIND;
 Set IPC, MOUNT, PRIVILEGED;
+Set UNKNOWN;
 
 // -------------------- FD Tracking --------------------
 typedef struct {
@@ -368,6 +369,11 @@ void parse_line(char *line) {
              !strcmp(syscall, "setuid") || !strcmp(syscall, "setgid")) {
         set_add(&PRIVILEGED, syscall);
     }
+
+    // ---- UNKNOWN (TODO) ----
+    else {
+        set_add(&UNKNOWN, syscall);
+    }
 }
 
 // -------------------- Stream Parsing --------------------
@@ -406,6 +412,7 @@ int main(int argc, char *argv[]) {
     set_init(&IPC);
     set_init(&MOUNT);
     set_init(&PRIVILEGED);
+    set_init(&UNKNOWN);
 
     if (argc < 2) {
         // If no arguments are pass, read from stdin
@@ -432,6 +439,7 @@ int main(int argc, char *argv[]) {
     print_set("IPC", &IPC);
     print_set("MOUNT", &MOUNT);
     print_set("PRIVILEGED", &PRIVILEGED);
+    print_set("UNKNOWN", &UNKNOWN);
 
     return 0;
 }
