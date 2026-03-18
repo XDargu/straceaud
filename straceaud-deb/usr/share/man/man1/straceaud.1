@@ -1,0 +1,24 @@
+.TH STRACEAUD 1 "March 2026" "straceaud 0.1" "User Commands"
+.SH NAME
+straceaud \- parse strace output and summarize filesystem operations
+.SH SYNOPSIS
+.B straceaud
+[\fItrace_file\fR]
+.SH DESCRIPTION
+.B straceaud
+is a small command-line tool to parse strace output.
+
+Use it with a saved strace file:
+
+.RS
+$ strace -o trace.txt your_program
+$ straceaud trace.txt
+.RE
+
+Or pipe strace output directly:
+
+.RS
+$ strace -f your_program 2>&1 | straceaud
+.RE
+.SH AUTHOR
+Daniel Armesto

@@ -1,0 +1,8 @@
+Package: straceaud
+Version: 0.1
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: Daniel Armesto <xdargu@gmail.com>
+Description: Simple parser for strace output
+ Parses strace output files and summarizes filesystem operations.

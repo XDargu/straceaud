@@ -1,23 +1,8 @@
 # straceaud
-straceaud is a small utility Linux tool to summarize and audit the output of strace.
-
-## Compilation
-
-Compile with gcc:
-
-```
- gcc -o straceaud straceaud.c
-```
-
-Remember to give permissions:
-
-```
- chmod +x straceaud
-```
 
 ## Installation
 
-You can also install straceaud as a package. Install `dist/package/straceaud-deb.deb.` usind dpkg
+Install the package usind dpkg
 
 ```
 sudo dpkg -i straceaud-deb.deb
