@@ -38,6 +38,26 @@ Alternatively, pipe the output of strace to the parser:
 strace -f your_program 2>&1 | ./straceaud
 ```
 
+## Supported calls
+
+Currently, the following calls are supported:
+ - open/openat
+ - mkdir
+ - unlink
+ - rename
+ - chmod
+ - chown
+ - setuid
+ - setgid
+ - socket
+ - connect
+ - bind
+ - mount
+ - ptrace
+ - capset
+ - reboot
+ - swapon
+
 ## Example
 
 A simple example of usage can be seen with this simple python program:
