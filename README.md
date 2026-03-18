@@ -43,6 +43,11 @@ strace -f your_program 2>&1 | ./straceaud
 Currently, the following calls are supported:
  - open/openat
  - mkdir
+ - newfstatat
+ - fstatat
+ - statx
+ - stat
+ - lstat
  - unlink
  - rename
  - chmod

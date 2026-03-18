@@ -106,6 +106,13 @@ void parse_line(char *line) {
         return;
     }
 
+    // stat family
+    if (regex_match("(newfstatat|fstatat|statx|stat|lstat)\\([^\"].*\"([^\"]+)\"", line, m, 3)) {
+        extract_group(line, m[2], file1);
+        set_add(&READ, file1);
+        return;
+    }
+
     // mkdir
     if (regex_match("mkdirat?\\([^\"].*\"([^\"]+)\"", line, m, 2)) {
         extract_group(line, m[1], file1);
