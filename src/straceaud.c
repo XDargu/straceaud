@@ -62,37 +62,59 @@ Set UNKNOWN;
 // -------------------- FD Tracking --------------------
 typedef struct {
     int used;
+    int pid;
+    int fd;
     char path[1024];
 } FDEntry;
 
-FDEntry fd_table[MAX_FDS];
+FDEntry fd_table[MAX_FDS * 4]; // more space
+int fd_count = 0;
 
-void fd_set_val(int fd, const char *path) {
-    if (fd < 0 || fd >= MAX_FDS)
+void fd_set_val(int pid, int fd, const char *path) {
+    if (fd < 0)
         return;
 
-    fd_table[fd].used = 1;
-    strncpy(fd_table[fd].path, path, sizeof(fd_table[fd].path)-1);
+    for (int i = 0; i < fd_count; i++) {
+        if (fd_table[i].used && fd_table[i].pid == pid && fd_table[i].fd == fd) {
+            strncpy(fd_table[i].path, path, sizeof(fd_table[i].path)-1);
+            return;
+        }
+    }
+
+    fd_table[fd_count++] = (FDEntry){1, pid, fd, {0}};
+    strncpy(fd_table[fd_count-1].path, path, sizeof(fd_table[fd_count-1].path)-1);
 }
 
-char* fd_get_val(int fd) {
-    if (fd < 0 || fd >= MAX_FDS)
-        return NULL;
-    
-    if (!fd_table[fd].used) 
-        return NULL;
+char* fd_get_val(int pid, int fd) {
+    for (int i = 0; i < fd_count; i++) {
+        if (fd_table[i].used && fd_table[i].pid == pid && fd_table[i].fd == fd)
+            return fd_table[i].path;
+    }
 
-    return fd_table[fd].path;
+    return NULL;
 }
 
-void fd_close_val(int fd) {
-    if (fd < 0 || fd >= MAX_FDS)
-        return;
-
-    fd_table[fd].used = 0;
+void fd_close_val(int pid, int fd) {
+    for (int i = 0; i < fd_count; i++) {
+        if (fd_table[i].used && fd_table[i].pid == pid && fd_table[i].fd == fd) {
+            fd_table[i].used = 0;
+            return;
+        }
+    }
 }
 
 // -------------------- Helpers --------------------
+int extract_pid(const char *line, const char **rest) {
+    int pid;
+    if (sscanf(line, "%d %n", &pid, (int[]){0}) == 1) {
+        *rest = strchr(line, ' ');
+        if (*rest) (*rest)++;
+        return pid;
+    }
+    *rest = line;
+    return 0; // fallback
+}
+
 int extract_fd_return(const char *line) {
     int fd;
     if (sscanf(line, "%*[^=]= %d", &fd) == 1 && fd >= 0)
@@ -127,77 +149,102 @@ void extract_path(const char *line, char *out) {
     out[len] = '\0';
 }
 
+void extract_socket_addr(const char *line, char *out) {
+    char ip[128] = {0};
+    int port = 0;
+
+    char *ip_start = strstr(line, "inet_addr(\"");
+    if (ip_start) {
+        sscanf(ip_start, "inet_addr(\"%127[^\"]\")", ip);
+    }
+
+    char *port_start = strstr(line, "htons(");
+    if (port_start) {
+        sscanf(port_start, "htons(%d)", &port);
+    }
+
+    if (strlen(ip) && port > 0) {
+        snprintf(out, 256, "tcp://%s:%d", ip, port);
+    } else {
+        strcpy(out, "socket");
+    }
+}
+
 // -------------------- Logic --------------------
-void handle_open(const char *line) {
-    char path[1024] = {0};
+void handle_open(const char *line, int pid) {
+    char path[1024]={0};
     extract_path(line, path);
 
     int fd = extract_fd_return(line);
-    if (fd >= 0) {
-        fd_set_val(fd, path);
-    }
+    if (fd >= 0)
+        fd_set_val(pid, fd, path);
 
-    if (strstr(line, "O_CREAT")) set_add(&CREATE, path);
+    if (strstr(line, "O_CREAT"))
+        set_add(&CREATE, path);
     if (strstr(line, "O_WRONLY") || strstr(line, "O_RDWR") || strstr(line, "O_TRUNC"))
         set_add(&WRITE, path);
     if (strstr(line, "O_RDONLY"))
         set_add(&READ, path);
 }
 
-void handle_fd_read(const char *line) {
+void handle_fd_read(const char *line, int pid) {
     int fd;
-    if (sscanf(line, "%*[^ (](%d,", &fd) == 1) {
-        char *path = fd_get_val(fd);
+    if (extract_fd_arg(line, &fd)) {
+        char *path = fd_get_val(pid, fd);
         if (path) set_add(&READ, path);
     }
 }
 
-void handle_fd_write(const char *line) {
+void handle_fd_write(const char *line, int pid) {
     int fd;
-    if (sscanf(line, "%*[^ (](%d,", &fd) == 1) {
-        char *path = fd_get_val(fd);
+    if (extract_fd_arg(line, &fd)) {
+        char *path = fd_get_val(pid, fd);
         if (path) set_add(&WRITE, path);
     }
 }
 
-void handle_close(const char *line) {
+void handle_close(const char *line, int pid) {
     int fd;
     if (sscanf(line, "close(%d)", &fd) == 1) {
-        fd_close_val(fd);
+        fd_close_val(pid, fd);
     }
 }
 
 void parse_line(char *line) {
+
+    const char *rest;
+    int pid = extract_pid(line, &rest);
+
     char syscall[64] = {0};
-    sscanf(line, "%63[^ (]", syscall);
+    sscanf(rest, "%63[^ (]", syscall);
 
     // ---- OPEN ----
     if (!strcmp(syscall, "open") || !strcmp(syscall, "openat")) {
-        handle_open(line);
+        handle_open(rest, pid);
     }
 
     // ---- FD READ ----
     else if (!strcmp(syscall, "read") || !strcmp(syscall, "pread64") ||
              !strcmp(syscall, "readv")) {
-        handle_fd_read(line);
+        handle_fd_read(rest, pid);
     }
 
     // ---- FD WRITE ----
     else if (!strcmp(syscall, "write") || !strcmp(syscall, "pwrite64") ||
              !strcmp(syscall, "writev")) {
-        handle_fd_write(line);
+        handle_fd_write(rest, pid);
     }
 
     // ---- CLOSE ----
     else if (!strcmp(syscall, "close")) {
-        handle_close(line);
+        handle_close(rest, pid);
     }
 
     // ---- DIRECTORY READ ----
     else if (!strcmp(syscall, "getdents64")) {
         int fd;
-        if (extract_fd_arg(line, &fd)) {
-            char *path = fd_get_val(fd);
+        if (extract_fd_arg(rest, &fd)) {
+            char *path = fd_get_val(pid, fd);
             if (path) set_add(&READ, path);
         }
     }
@@ -208,15 +255,46 @@ void parse_line(char *line) {
              !strcmp(syscall, "fstatat")) {
 
         char path[1024] = {0};
-        extract_path(line, path);
+        extract_path(rest, path);
+        if (strlen(path)) set_add(&METADATA, path);
+    }
+
+    else if (!strcmp(syscall, "uname")) {
+        set_add(&METADATA, "system_info");
+    }
+
+    else if (!strcmp(syscall, "lseek")) {
+        int fd;
+        if (extract_fd_arg(rest, &fd)) {
+            char *path = fd_get_val(pid, fd);
+            if (path) set_add(&METADATA, path);
+        }
+    }
+
+    else if (!strcmp(syscall, "getcwd")) {
+        char path[1024]={0};
+        extract_path(rest, path);
+        if (strlen(path)) set_add(&METADATA, path);
+    }
+
+    // ---- METADATA (PERM) ----
+    else if (!strcmp(syscall, "chmod") || !strcmp(syscall, "fchmodat")) {
+        char path[1024]={0};
+        extract_path(rest, path);
+        if (strlen(path)) set_add(&METADATA, path);
+    }
+
+    else if (!strcmp(syscall, "chown") || !strcmp(syscall, "fchownat")) {
+        char path[1024]={0};
+        extract_path(rest, path);
         if (strlen(path)) set_add(&METADATA, path);
     }
 
     // ---- METADATA (FD) ----
     else if (!strcmp(syscall, "fstat")) {
         int fd;
-        if (extract_fd_arg(line, &fd)) {
-            char *path = fd_get_val(fd);
+        if (extract_fd_arg(rest, &fd)) {
+            char *path = fd_get_val(pid, fd);
             if (path) set_add(&METADATA, path);
         }
     }
@@ -224,21 +302,21 @@ void parse_line(char *line) {
     // ---- ACCESS ----
     else if (!strcmp(syscall, "access")) {
         char path[1024] = {0};
-        extract_path(line, path);
+        extract_path(rest, path);
         if (strlen(path)) set_add(&READ, path);
     }
 
     // ---- READLINK ----
     else if (!strcmp(syscall, "readlink")) {
         char path[1024] = {0};
-        extract_path(line, path);
+        extract_path(rest, path);
         if (strlen(path)) set_add(&READ, path);
     }
 
     // ---- MKDIR ----
     else if (!strcmp(syscall, "mkdir") || !strcmp(syscall, "mkdirat")) {
         char path[1024] = {0};
-        extract_path(line, path);
+        extract_path(rest, path);
         set_add(&MKDIR, path);
     }
 
@@ -248,7 +326,7 @@ void parse_line(char *line) {
              !strcmp(syscall, "creat")) {
 
         char path[1024] = {0};
-        extract_path(line, path);
+        extract_path(rest, path);
         set_add(&CREATE, path);
     }
 
@@ -257,14 +335,14 @@ void parse_line(char *line) {
              !strcmp(syscall, "rmdir")) {
 
         char path[1024] = {0};
-        extract_path(line, path);
+        extract_path(rest, path);
         set_add(&DELETE, path);
     }
 
     // ---- RENAME ----
     else if (!strcmp(syscall, "rename") || !strcmp(syscall, "renameat") || !strcmp(syscall, "renameat2")) {
         char p1[1024]={0}, p2[1024]={0};
-        char *first = strchr(line, '"');
+        char *first = strchr(rest, '"');
         if (first) {
             char *second = strchr(first+1, '"');
             char *third = second ? strchr(second+1, '"') : NULL;
@@ -284,7 +362,7 @@ void parse_line(char *line) {
     // ---- EXEC ----
     else if (!strcmp(syscall, "execve") || !strcmp(syscall, "execveat")) {
         char path[1024]={0};
-        extract_path(line, path);
+        extract_path(rest, path);
         if (strlen(path)) {
             set_add(&EXEC, path);
             set_add(&READ, path);
@@ -299,39 +377,68 @@ void parse_line(char *line) {
 
     // ---- SOCKET ----
     else if (!strcmp(syscall, "socket")) {
-        int fd = extract_fd_return(line);
-        if (fd >= 0) fd_set_val(fd, "socket");
+        int fd = extract_fd_return(rest);
+        if (fd >= 0) fd_set_val(pid, fd, "socket");
     }
 
     else if (!strcmp(syscall, "connect")) {
         int fd;
-        if (extract_fd_arg(line, &fd)) {
-            char *path = fd_get_val(fd);
-            if (path) set_add(&NETWORK_CONNECT, path);
-            else set_add(&NETWORK_CONNECT, "unknown_socket");
+        if (extract_fd_arg(rest, &fd)) {
+            char addr[256]={0};
+            extract_socket_addr(rest, addr);
+
+            fd_set_val(pid, fd, addr);
+            set_add(&NETWORK_CONNECT, addr);
+        }
+    }
+
+    else if (!strcmp(syscall, "recvfrom") || !strcmp(syscall, "recvmsg")) {
+        int fd;
+        if (extract_fd_arg(rest, &fd)) {
+            char *path = fd_get_val(pid, fd);
+            if (path)
+                set_add(&NETWORK_CONNECT, path);
+        }
+    }
+
+    else if (!strcmp(syscall, "sendto")) {
+        int fd;
+        if (extract_fd_arg(rest, &fd)) {
+            char *path = fd_get_val(pid, fd);
+            if (path)
+                set_add(&NETWORK_CONNECT, path);
+        }
+    }
+
+    else if (!strcmp(syscall, "getsockname") || !strcmp(syscall, "getpeername")) {
+        int fd;
+        if (extract_fd_arg(rest, &fd)) {
+            char *path = fd_get_val(pid, fd);
+            if (path)
+                set_add(&NETWORK_CONNECT, path);
         }
     }
 
     else if (!strcmp(syscall, "bind") || !strcmp(syscall, "listen") ||
-             !strcmp(syscall, "accept") || !strcmp(syscall, "accept4")) {
+             !strcmp(syscall, "accept") || !strcmp(syscall, "accept4") || !strcmp(syscall, "setsockopt")) {
         set_add(&NETWORK_BIND, syscall);
     }
 
     // ---- PIPE ----
     else if (!strcmp(syscall, "pipe") || !strcmp(syscall, "pipe2")) {
         int fd1 = -1, fd2 = -1;
-        extract_pipe_fds(line, &fd1, &fd2);
-        if (fd1 >= 0) fd_set_val(fd1, "pipe_read");
-        if (fd2 >= 0) fd_set_val(fd2, "pipe_write");
+        extract_pipe_fds(rest, &fd1, &fd2);
+        if (fd1 >= 0) fd_set_val(pid, fd1, "pipe_read");
+        if (fd2 >= 0) fd_set_val(pid, fd2, "pipe_write");
         set_add(&IPC, syscall);
     }
 
     // ---- DUP ----
     else if (!strcmp(syscall, "dup") || !strcmp(syscall, "dup2") || !strcmp(syscall, "dup3")) {
         int oldfd, newfd;
-        if (extract_two_fds(line, &oldfd, &newfd)) {
-            char *path = fd_get_val(oldfd);
-            if (path) fd_set_val(newfd, path);
+        if (extract_two_fds(rest, &oldfd, &newfd)) {
+            char *path = fd_get_val(pid, oldfd);
+            if (path) fd_set_val(pid, newfd, path);
         }
         set_add(&IPC, syscall);
     }
@@ -339,13 +446,17 @@ void parse_line(char *line) {
     // ---- MMAP ----
     else if (!strcmp(syscall, "mmap")) {
         int fd;
-        if (sscanf(line, "%*[^,], %*[^,], %*[^,], %*[^,], %d", &fd) == 1) {
+        if (sscanf(rest, "%*[^,], %*[^,], %*[^,], %*[^,], %d", &fd) == 1) {
             if (fd >= 0) {
-                char *path = fd_get_val(fd);
+                char *path = fd_get_val(pid, fd);
                 if (path) set_add(&READ, path);
             }
         }
         set_add(&IPC, "mmap");
+    }
+
+    else if (!strcmp(syscall, "munmap")) {
+        set_add(&IPC, "munmap");
     }
 
     // ---- IOCTL ----
@@ -358,6 +469,13 @@ void parse_line(char *line) {
         set_add(&IPC, "fcntl");
     }
 
+
+    else if (!strcmp(syscall, "epoll_create1") ||
+            !strcmp(syscall, "poll") ||
+            !strcmp(syscall, "futex")) {
+        set_add(&IPC, syscall);
+    }
+
     // ---- MOUNT ----
     else if (!strcmp(syscall, "mount") || !strcmp(syscall, "umount") || !strcmp(syscall, "umount2")) {
         set_add(&MOUNT, syscall);
@@ -368,6 +486,22 @@ void parse_line(char *line) {
              !strcmp(syscall, "reboot") || !strcmp(syscall, "swapon") ||
              !strcmp(syscall, "setuid") || !strcmp(syscall, "setgid")) {
         set_add(&PRIVILEGED, syscall);
+    }
+
+    // ignore syscalls not relevant for resource usage
+    else if (!strcmp(syscall, "arch_prctl") ||
+            !strcmp(syscall, "brk") ||
+            !strcmp(syscall, "rseq") ||
+            !strcmp(syscall, "rt_sigaction") ||
+            !strcmp(syscall, "set_tid_address") ||
+            !strcmp(syscall, "gettid") ||
+            !strcmp(syscall, "getuid") ||
+            !strcmp(syscall, "geteuid") ||
+            !strcmp(syscall, "getgid") ||
+            !strcmp(syscall, "getegid") ||
+            !strcmp(syscall, "exit_group") ||
+            !strcmp(syscall, "getrandom")) {
+        // ignore
     }
 
     // ---- UNKNOWN (TODO) ----

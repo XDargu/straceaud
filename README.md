@@ -47,6 +47,10 @@ Currently, the following calls are supported:
  - close
  - getdents64
  - stat/lstat/statx/newfstatat/fstatat
+ - uname
+ - lseek
+ - getcwd
+ - chmod/fchmodat/chown/fchownat
  - fstat
  - access
  - readlink
@@ -56,14 +60,34 @@ Currently, the following calls are supported:
  - rename/renameat/renameat2
  - execve/execveat
  - fork/vfork/clone/clone3
- - socket/connect/bind/listen/accept/accept4
+ - socket/connect/bind/listen/accept/accept4/setsockopt
+ - recvfrom/recvmsg
+ - sendto
+ - getsockname/getpeername
  - pipe/pipe2
  - dup/dup2/dup3
- - mmap
+ - mmap/munmap
  - ioctl
  - fcntl
+ - epoll_create1
+ - poll
+ - futex
  - mount/umount/umount2
  - ptrace/capset/reboot/swapon/setuid/setgid
+
+And the following syscalls are ignored:
+ - arch_prctl
+ - brk
+ - rseq
+ - rt_sigaction
+ - set_tid_address
+ - gettid
+ - getuid
+ - geteuid
+ - getgid
+ - getegid
+ - exit_group
+ - getrandom
 
 ## Example
 
@@ -980,6 +1004,8 @@ mydir/file1.txt -> mydir/file2.txt
 /usr/sbin/python3
 /usr/share/locale/locale.alias
 mydir/file1.txt
+mydir/file2.txt
+system_info
 
 ==== EXEC ====
 
@@ -991,19 +1017,34 @@ mydir/file1.txt
 ==== NETWORK CONNECT ====
 
 socket
+tcp://104.18.26.120:80
+tcp://172.24.64.1:53
 
 ==== NETWORK BIND ====
 
 bind
+setsockopt
 
 ==== IPC ====
 
+epoll_create1
 fcntl
+futex
 ioctl
 mmap
+munmap
+poll
 
 ==== MOUNT ====
 
 
 ==== PRIVILEGED ====
+
+
+==== UNKNOWN ====
+
++++
+mprotect
+prlimit64
+set_robust_list
 ```
