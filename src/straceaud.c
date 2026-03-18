@@ -1,10 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <dirent.h>
-#include <regex.h>
 
 #define MAX_LINE 4096
+#define MAX_FDS 4096
 
 // -------------------- Simple Set --------------------
 typedef struct {
@@ -55,133 +54,318 @@ void print_set(const char *title, Set *s) {
 
 // -------------------- Global Sets --------------------
 Set READ, WRITE, CREATE, MKDIR, DELETE, RENAME;
-Set CHMOD, CHOWN, SETUID, SETGID;
-Set NETWORK_CONNECT, NETWORK_BIND, MOUNT, PRIVILEGED;
+Set METADATA, EXEC, PROCESS;
+Set NETWORK_CONNECT, NETWORK_BIND;
+Set IPC, MOUNT, PRIVILEGED;
 
-// -------------------- Regex Helpers --------------------
-int regex_match(const char *pattern, const char *str, regmatch_t *matches, int nmatch) {
-    regex_t regex;
-    if (regcomp(&regex, pattern, REG_EXTENDED))
-        return 0;
+// -------------------- FD Tracking --------------------
+typedef struct {
+    int used;
+    char path[1024];
+} FDEntry;
 
-    int ret = regexec(&regex, str, nmatch, matches, 0);
-    regfree(&regex);
+FDEntry fd_table[MAX_FDS];
 
-    return ret == 0;
+void fd_set_val(int fd, const char *path) {
+    if (fd < 0 || fd >= MAX_FDS)
+        return;
+
+    fd_table[fd].used = 1;
+    strncpy(fd_table[fd].path, path, sizeof(fd_table[fd].path)-1);
 }
 
-void extract_group(const char *src, regmatch_t match, char *dest) {
-    int len = match.rm_eo - match.rm_so;
-    strncpy(dest, src + match.rm_so, len);
-    dest[len] = '\0';
+char* fd_get_val(int fd) {
+    if (fd < 0 || fd >= MAX_FDS)
+        return NULL;
+    
+    if (!fd_table[fd].used) 
+        return NULL;
+
+    return fd_table[fd].path;
+}
+
+void fd_close_val(int fd) {
+    if (fd < 0 || fd >= MAX_FDS)
+        return;
+
+    fd_table[fd].used = 0;
+}
+
+// -------------------- Helpers --------------------
+int extract_fd_return(const char *line) {
+    int fd;
+    if (sscanf(line, "%*[^=]= %d", &fd) == 1 && fd >= 0)
+        return fd;
+    return -1;
+}
+
+int extract_fd_arg(const char *line, int *fd) {
+    return sscanf(line, "%*[^ (](%d,", fd) == 1;
+}
+
+int extract_two_fds(const char *line, int *fd1, int *fd2) {
+    return sscanf(line, "%*[^ (](%d, %d", fd1, fd2) == 2;
+}
+
+// Extract two FDs from pipe([x,y])
+void extract_pipe_fds(const char *line, int *fd1, int *fd2) {
+    sscanf(line, "%*[^[][%d,%d]", fd1, fd2);
+}
+
+void extract_path(const char *line, char *out) {
+    char *start = strchr(line, '"');
+    if (!start) 
+        return;
+    
+    char *end = strchr(start + 1, '"');
+    if (!end)
+        return;
+
+    size_t len = end - start - 1;
+    strncpy(out, start + 1, len);
+    out[len] = '\0';
 }
 
 // -------------------- Logic --------------------
-void classify_file_open(const char *flags, const char *file) {
-    if (strstr(flags, "O_CREAT") ||
-        strstr(flags, "O_WRONLY") ||
-        strstr(flags, "O_RDWR") ||
-        strstr(flags, "O_TRUNC")) {
-        set_add(&WRITE, file);
+void handle_open(const char *line) {
+    char path[1024] = {0};
+    extract_path(line, path);
+
+    int fd = extract_fd_return(line);
+    if (fd >= 0) {
+        fd_set_val(fd, path);
     }
 
-    if (strstr(flags, "O_CREAT")) {
-        set_add(&CREATE, file);
-    }
+    if (strstr(line, "O_CREAT")) set_add(&CREATE, path);
+    if (strstr(line, "O_WRONLY") || strstr(line, "O_RDWR") || strstr(line, "O_TRUNC"))
+        set_add(&WRITE, path);
+    if (strstr(line, "O_RDONLY"))
+        set_add(&READ, path);
+}
 
-    if (strstr(flags, "O_RDONLY")) {
-        set_add(&READ, file);
+void handle_fd_read(const char *line) {
+    int fd;
+    if (sscanf(line, "%*[^ (](%d,", &fd) == 1) {
+        char *path = fd_get_val(fd);
+        if (path) set_add(&READ, path);
+    }
+}
+
+void handle_fd_write(const char *line) {
+    int fd;
+    if (sscanf(line, "%*[^ (](%d,", &fd) == 1) {
+        char *path = fd_get_val(fd);
+        if (path) set_add(&WRITE, path);
+    }
+}
+
+void handle_close(const char *line) {
+    int fd;
+    if (sscanf(line, "close(%d)", &fd) == 1) {
+        fd_close_val(fd);
     }
 }
 
 void parse_line(char *line) {
-    regmatch_t m[3];
-    char file1[1024], file2[1024], flags[256];
+    char syscall[64] = {0};
+    sscanf(line, "%63[^ (]", syscall);
 
-    // open/openat
-    if (regex_match("openat?\\([^\"].*\"([^\"]+)\",[[:space:]]*([A-Z_|]+)", line, m, 3)) {
-        extract_group(line, m[1], file1);
-        extract_group(line, m[2], flags);
-        classify_file_open(flags, file1);
-        return;
+    // ---- OPEN ----
+    if (!strcmp(syscall, "open") || !strcmp(syscall, "openat")) {
+        handle_open(line);
     }
 
-    // stat family
-    if (regex_match("(newfstatat|fstatat|statx|stat|lstat)\\([^\"].*\"([^\"]+)\"", line, m, 3)) {
-        extract_group(line, m[2], file1);
-        set_add(&READ, file1);
-        return;
+    // ---- FD READ ----
+    else if (!strcmp(syscall, "read") || !strcmp(syscall, "pread64") ||
+             !strcmp(syscall, "readv")) {
+        handle_fd_read(line);
     }
 
-    // mkdir
-    if (regex_match("mkdirat?\\([^\"].*\"([^\"]+)\"", line, m, 2)) {
-        extract_group(line, m[1], file1);
-        set_add(&MKDIR, file1);
-        return;
+    // ---- FD WRITE ----
+    else if (!strcmp(syscall, "write") || !strcmp(syscall, "pwrite64") ||
+             !strcmp(syscall, "writev")) {
+        handle_fd_write(line);
     }
 
-    // unlink
-    if (regex_match("unlinkat?\\([^\"].*\"([^\"]+)\"", line, m, 2)) {
-        extract_group(line, m[1], file1);
-        set_add(&DELETE, file1);
-        return;
+    // ---- CLOSE ----
+    else if (!strcmp(syscall, "close")) {
+        handle_close(line);
     }
 
-    // rename
-    if (regex_match("renameat?\\([^\"].*\"([^\"]+)\",[[:space:]]*\"([^\"]+)\"", line, m, 3)) {
-        extract_group(line, m[1], file1);
-        extract_group(line, m[2], file2);
-
-        char buffer[4096];
-        snprintf(buffer, sizeof(buffer), "%s -> %s", file1, file2);
-        set_add(&RENAME, buffer);
-        return;
+    // ---- DIRECTORY READ ----
+    else if (!strcmp(syscall, "getdents64")) {
+        int fd;
+        if (extract_fd_arg(line, &fd)) {
+            char *path = fd_get_val(fd);
+            if (path) set_add(&READ, path);
+        }
     }
 
-    // chmod
-    if (regex_match("chmodat?\\([^\"].*\"([^\"]+)\"", line, m, 2)) {
-        extract_group(line, m[1], file1);
-        set_add(&CHMOD, file1);
-        return;
+    // ---- METADATA (PATH) ----
+    else if (!strcmp(syscall, "stat") || !strcmp(syscall, "lstat") ||
+             !strcmp(syscall, "statx") || !strcmp(syscall, "newfstatat") ||
+             !strcmp(syscall, "fstatat")) {
+
+        char path[1024] = {0};
+        extract_path(line, path);
+        if (strlen(path)) set_add(&METADATA, path);
     }
 
-    // chown
-    if (regex_match("fchownat?\\([^\"].*\"([^\"]+)\"", line, m, 2)) {
-        extract_group(line, m[1], file1);
-        set_add(&CHOWN, file1);
-        return;
+    // ---- METADATA (FD) ----
+    else if (!strcmp(syscall, "fstat")) {
+        int fd;
+        if (extract_fd_arg(line, &fd)) {
+            char *path = fd_get_val(fd);
+            if (path) set_add(&METADATA, path);
+        }
     }
 
-    // setuid
-    if (regex_match("setuid\\(([0-9]+)\\)", line, m, 2)) {
-        extract_group(line, m[1], file1);
-        set_add(&SETUID, file1);
-        return;
+    // ---- ACCESS ----
+    else if (!strcmp(syscall, "access")) {
+        char path[1024] = {0};
+        extract_path(line, path);
+        if (strlen(path)) set_add(&READ, path);
     }
 
-    // setgid
-    if (regex_match("setgid\\(([0-9]+)\\)", line, m, 2)) {
-        extract_group(line, m[1], file1);
-        set_add(&SETGID, file1);
-        return;
+    // ---- READLINK ----
+    else if (!strcmp(syscall, "readlink")) {
+        char path[1024] = {0};
+        extract_path(line, path);
+        if (strlen(path)) set_add(&READ, path);
     }
 
-    // network
-    if (strstr(line, "socket(")) set_add(&NETWORK_CONNECT, "socket");
-    if (strstr(line, "connect(")) set_add(&NETWORK_CONNECT, "connect");
-    if (strstr(line, "bind(")) set_add(&NETWORK_BIND, "bind");
+    // ---- MKDIR ----
+    else if (!strcmp(syscall, "mkdir") || !strcmp(syscall, "mkdirat")) {
+        char path[1024] = {0};
+        extract_path(line, path);
+        set_add(&MKDIR, path);
+    }
 
-    // mount
-    if (strstr(line, "mount(")) set_add(&MOUNT, "mount");
+    // ---- CREATE ----
+    else if (!strcmp(syscall, "link") || !strcmp(syscall, "linkat") ||
+             !strcmp(syscall, "symlink") || !strcmp(syscall, "symlinkat") ||
+             !strcmp(syscall, "creat")) {
 
-    // privileged
-    if (strstr(line, "ptrace(") ||
-        strstr(line, "capset(") ||
-        strstr(line, "reboot(") ||
-        strstr(line, "swapon(")) {
+        char path[1024] = {0};
+        extract_path(line, path);
+        set_add(&CREATE, path);
+    }
 
-        char syscall[256];
-        sscanf(line, "%[^ (]", syscall);
+    // ---- DELETE ----
+    else if (!strcmp(syscall, "unlink") || !strcmp(syscall, "unlinkat") ||
+             !strcmp(syscall, "rmdir")) {
+
+        char path[1024] = {0};
+        extract_path(line, path);
+        set_add(&DELETE, path);
+    }
+
+    // ---- RENAME ----
+    else if (!strcmp(syscall, "rename") || !strcmp(syscall, "renameat") || !strcmp(syscall, "renameat2")) {
+        char p1[1024]={0}, p2[1024]={0};
+        char *first = strchr(line, '"');
+        if (first) {
+            char *second = strchr(first+1, '"');
+            char *third = second ? strchr(second+1, '"') : NULL;
+            char *fourth = third ? strchr(third+1, '"') : NULL;
+
+            if (second && third && fourth) {
+                snprintf(p1, sizeof(p1), "%.*s", (int)(second-first-1), first+1);
+                snprintf(p2, sizeof(p2), "%.*s", (int)(fourth-third-1), third+1);
+
+                char buf[4096];
+                snprintf(buf, sizeof(buf), "%s -> %s", p1, p2);
+                set_add(&RENAME, buf);
+            }
+        }
+    }
+
+    // ---- EXEC ----
+    else if (!strcmp(syscall, "execve") || !strcmp(syscall, "execveat")) {
+        char path[1024]={0};
+        extract_path(line, path);
+        if (strlen(path)) {
+            set_add(&EXEC, path);
+            set_add(&READ, path);
+        }
+    }
+
+    // ---- PROCESS ----
+    else if (!strcmp(syscall, "fork") || !strcmp(syscall, "vfork") ||
+             !strcmp(syscall, "clone") || !strcmp(syscall, "clone3")) {
+        set_add(&PROCESS, syscall);
+    }
+
+    // ---- SOCKET ----
+    else if (!strcmp(syscall, "socket")) {
+        int fd = extract_fd_return(line);
+        if (fd >= 0) fd_set_val(fd, "socket");
+    }
+
+    else if (!strcmp(syscall, "connect")) {
+        int fd;
+        if (extract_fd_arg(line, &fd)) {
+            char *path = fd_get_val(fd);
+            if (path) set_add(&NETWORK_CONNECT, path);
+            else set_add(&NETWORK_CONNECT, "unknown_socket");
+        }
+    }
+
+    else if (!strcmp(syscall, "bind") || !strcmp(syscall, "listen") ||
+             !strcmp(syscall, "accept") || !strcmp(syscall, "accept4")) {
+        set_add(&NETWORK_BIND, syscall);
+    }
+
+    // ---- PIPE ----
+    else if (!strcmp(syscall, "pipe") || !strcmp(syscall, "pipe2")) {
+        int fd1 = -1, fd2 = -1;
+        extract_pipe_fds(line, &fd1, &fd2);
+        if (fd1 >= 0) fd_set_val(fd1, "pipe_read");
+        if (fd2 >= 0) fd_set_val(fd2, "pipe_write");
+        set_add(&IPC, syscall);
+    }
+
+    // ---- DUP ----
+    else if (!strcmp(syscall, "dup") || !strcmp(syscall, "dup2") || !strcmp(syscall, "dup3")) {
+        int oldfd, newfd;
+        if (extract_two_fds(line, &oldfd, &newfd)) {
+            char *path = fd_get_val(oldfd);
+            if (path) fd_set_val(newfd, path);
+        }
+        set_add(&IPC, syscall);
+    }
+
+    // ---- MMAP ----
+    else if (!strcmp(syscall, "mmap")) {
+        int fd;
+        if (sscanf(line, "%*[^,], %*[^,], %*[^,], %*[^,], %d", &fd) == 1) {
+            if (fd >= 0) {
+                char *path = fd_get_val(fd);
+                if (path) set_add(&READ, path);
+            }
+        }
+        set_add(&IPC, "mmap");
+    }
+
+    // ---- IOCTL ----
+    else if (!strcmp(syscall, "ioctl")) {
+        set_add(&IPC, "ioctl");
+    }
+
+    // ---- FCNTL ----
+    else if (!strcmp(syscall, "fcntl")) {
+        set_add(&IPC, "fcntl");
+    }
+
+    // ---- MOUNT ----
+    else if (!strcmp(syscall, "mount") || !strcmp(syscall, "umount") || !strcmp(syscall, "umount2")) {
+        set_add(&MOUNT, syscall);
+    }
+
+    // ---- PRIVILEGED ----
+    else if (!strcmp(syscall, "ptrace") || !strcmp(syscall, "capset") ||
+             !strcmp(syscall, "reboot") || !strcmp(syscall, "swapon") ||
+             !strcmp(syscall, "setuid") || !strcmp(syscall, "setgid")) {
         set_add(&PRIVILEGED, syscall);
     }
 }
@@ -214,12 +398,12 @@ int main(int argc, char *argv[]) {
     set_init(&MKDIR);
     set_init(&DELETE);
     set_init(&RENAME);
-    set_init(&CHMOD);
-    set_init(&CHOWN);
-    set_init(&SETUID);
-    set_init(&SETGID);
+    set_init(&METADATA);
+    set_init(&EXEC);
+    set_init(&PROCESS);
     set_init(&NETWORK_CONNECT);
     set_init(&NETWORK_BIND);
+    set_init(&IPC);
     set_init(&MOUNT);
     set_init(&PRIVILEGED);
 
@@ -240,14 +424,14 @@ int main(int argc, char *argv[]) {
     print_set("CREATED DIRECTORIES", &MKDIR);
     print_set("DELETED FILES", &DELETE);
     print_set("RENAMED FILES", &RENAME);
-    print_set("CHMOD OPERATIONS", &CHMOD);
-    print_set("CHOWN OPERATIONS", &CHOWN);
-    print_set("SETUID CALLS", &SETUID);
-    print_set("SETGID CALLS", &SETGID);
+    print_set("METADATA", &METADATA);
+    print_set("EXEC", &EXEC);
+    print_set("PROCESS", &PROCESS);
     print_set("NETWORK CONNECT", &NETWORK_CONNECT);
     print_set("NETWORK BIND", &NETWORK_BIND);
-    print_set("MOUNT CALLS", &MOUNT);
-    print_set("PRIVILEGED SYSCALLS", &PRIVILEGED);
+    print_set("IPC", &IPC);
+    print_set("MOUNT", &MOUNT);
+    print_set("PRIVILEGED", &PRIVILEGED);
 
     return 0;
 }

@@ -42,26 +42,28 @@ strace -f your_program 2>&1 | ./straceaud
 
 Currently, the following calls are supported:
  - open/openat
- - mkdir
- - newfstatat
- - fstatat
- - statx
- - stat
- - lstat
- - unlink
- - rename
- - chmod
- - chown
- - setuid
- - setgid
- - socket
- - connect
- - bind
- - mount
- - ptrace
- - capset
- - reboot
- - swapon
+ - read/pread64/readv
+ - write/pwrite64/writev
+ - close
+ - getdents64
+ - stat/lstat/statx/newfstatat/fstatat
+ - fstat
+ - access
+ - readlink
+ - mkdir/mkdirat
+ - link/linkat/symlink/symlinkat/creat
+ - unlink/unlinkat/rmdir
+ - rename/renameat/renameat2
+ - execve/execveat
+ - fork/vfork/clone/clone3
+ - socket/connect/bind/listen/accept/accept4
+ - pipe/pipe2
+ - dup/dup2/dup3
+ - mmap
+ - ioctl
+ - fcntl
+ - mount/umount/umount2
+ - ptrace/capset/reboot/swapon/setuid/setgid
 
 ## Example
 
@@ -802,16 +804,19 @@ Running `straceaud` with that output gives an overview of which resources are ac
 /etc/host.conf
 /etc/hosts
 /etc/ld.so.cache
+/etc/ld.so.preload
 /etc/localtime
 /etc/nsswitch.conf
 /etc/resolv.conf
-/home/testuser
-/home/testuser/test.py
+/home/daniel
+/home/daniel/test.py
 /lib/x86_64-linux-gnu/libc.so.6
 /lib/x86_64-linux-gnu/libexpat.so.1
 /lib/x86_64-linux-gnu/libm.so.6
 /lib/x86_64-linux-gnu/libz.so.1
 /usr/bin/pybuilddir.txt
+/usr/bin/python3
+/usr/bin/python3.12
 /usr/bin/python3.12._pth
 /usr/bin/python3._pth
 /usr/bin/pyvenv.cfg
@@ -851,6 +856,7 @@ Running `straceaud` with that output gives an overview of which resources are ac
 /usr/local/lib/python3.12/dist-packages
 /usr/pyvenv.cfg
 /usr/share/locale/locale.alias
+test.py
 
 ==== WRITE FILES ====
 
@@ -862,36 +868,142 @@ mydir/file1.txt
 
 ==== CREATED DIRECTORIES ====
 
+mydir
 
 ==== DELETED FILES ====
 
 
 ==== RENAMED FILES ====
 
+mydir/file1.txt -> mydir/file2.txt
 
-==== CHMOD OPERATIONS ====
+==== METADATA ====
 
+/
+/etc/gai.conf
+/etc/host.conf
+/etc/hosts
+/etc/ld.so.cache
+/etc/localtime
+/etc/nsswitch.conf
+/etc/resolv.conf
+/home/daniel
+/home/daniel/.local/lib/python3.12/site-packages
+/home/daniel/test.py
+/lib/x86_64-linux-gnu/libc.so.6
+/lib/x86_64-linux-gnu/libexpat.so.1
+/lib/x86_64-linux-gnu/libm.so.6
+/lib/x86_64-linux-gnu/libz.so.1
+/usr/bin/Modules/Setup.local
+/usr/bin/lib/python3.12/lib-dynload
+/usr/bin/lib/python3.12/os.py
+/usr/bin/lib/python3.12/os.pyc
+/usr/bin/lib/python312.zip
+/usr/bin/python3
+/usr/bin/pyvenv.cfg
+/usr/lib
+/usr/lib/locale/C.utf8/LC_CTYPE
+/usr/lib/python3.12
+/usr/lib/python3.12/__pycache__/_weakrefset.cpython-312.pyc
+/usr/lib/python3.12/__pycache__/enum.cpython-312.pyc
+/usr/lib/python3.12/__pycache__/functools.cpython-312.pyc
+/usr/lib/python3.12/__pycache__/keyword.cpython-312.pyc
+/usr/lib/python3.12/__pycache__/operator.cpython-312.pyc
+/usr/lib/python3.12/__pycache__/reprlib.cpython-312.pyc
+/usr/lib/python3.12/__pycache__/selectors.cpython-312.pyc
+/usr/lib/python3.12/__pycache__/sitecustomize.cpython-312.pyc
+/usr/lib/python3.12/__pycache__/socket.cpython-312.pyc
+/usr/lib/python3.12/__pycache__/threading.cpython-312.pyc
+/usr/lib/python3.12/__pycache__/types.cpython-312.pyc
+/usr/lib/python3.12/__pycache__/warnings.cpython-312.pyc
+/usr/lib/python3.12/_weakrefset.py
+/usr/lib/python3.12/collections
+/usr/lib/python3.12/collections/__init__.abi3.so
+/usr/lib/python3.12/collections/__init__.cpython-312-x86_64-linux-gnu.so
+/usr/lib/python3.12/collections/__init__.py
+/usr/lib/python3.12/collections/__init__.so
+/usr/lib/python3.12/collections/__pycache__/__init__.cpython-312.pyc
+/usr/lib/python3.12/collections/__pycache__/abc.cpython-312.pyc
+/usr/lib/python3.12/collections/abc.py
+/usr/lib/python3.12/dist-packages
+/usr/lib/python3.12/encodings
+/usr/lib/python3.12/encodings/__init__.abi3.so
+/usr/lib/python3.12/encodings/__init__.cpython-312-x86_64-linux-gnu.so
+/usr/lib/python3.12/encodings/__init__.py
+/usr/lib/python3.12/encodings/__init__.so
+/usr/lib/python3.12/encodings/__pycache__/__init__.cpython-312.pyc
+/usr/lib/python3.12/encodings/__pycache__/aliases.cpython-312.pyc
+/usr/lib/python3.12/encodings/__pycache__/utf_8.cpython-312.pyc
+/usr/lib/python3.12/encodings/aliases.py
+/usr/lib/python3.12/encodings/utf_8.py
+/usr/lib/python3.12/enum.py
+/usr/lib/python3.12/functools.py
+/usr/lib/python3.12/importlib
+/usr/lib/python3.12/importlib/__init__.abi3.so
+/usr/lib/python3.12/importlib/__init__.cpython-312-x86_64-linux-gnu.so
+/usr/lib/python3.12/importlib/__init__.py
+/usr/lib/python3.12/importlib/__init__.so
+/usr/lib/python3.12/importlib/__pycache__/__init__.cpython-312.pyc
+/usr/lib/python3.12/importlib/__pycache__/_abc.cpython-312.pyc
+/usr/lib/python3.12/importlib/_abc.py
+/usr/lib/python3.12/keyword.py
+/usr/lib/python3.12/lib-dynload
+/usr/lib/python3.12/operator.py
+/usr/lib/python3.12/os.py
+/usr/lib/python3.12/reprlib.py
+/usr/lib/python3.12/selectors.py
+/usr/lib/python3.12/sitecustomize.py
+/usr/lib/python3.12/socket.py
+/usr/lib/python3.12/threading.py
+/usr/lib/python3.12/types.py
+/usr/lib/python3.12/warnings.py
+/usr/lib/python3/dist-packages
+/usr/lib/python3/dist-packages/__pycache__/apport_python_hook.cpython-312.pyc
+/usr/lib/python3/dist-packages/_distutils_hack/__init__.abi3.so
+/usr/lib/python3/dist-packages/_distutils_hack/__init__.cpython-312-x86_64-linux-gnu.so
+/usr/lib/python3/dist-packages/_distutils_hack/__init__.py
+/usr/lib/python3/dist-packages/_distutils_hack/__init__.so
+/usr/lib/python3/dist-packages/_distutils_hack/__pycache__/__init__.cpython-312.pyc
+/usr/lib/python3/dist-packages/apport_python_hook.py
+/usr/lib/python3/dist-packages/distutils-precedence.pth
+/usr/lib/python3/dist-packages/zope.interface-6.1-nspkg.pth
+/usr/lib/python3/dist-packages/zope/__init__.abi3.so
+/usr/lib/python3/dist-packages/zope/__init__.cpython-312-x86_64-linux-gnu.so
+/usr/lib/python3/dist-packages/zope/__init__.py
+/usr/lib/python3/dist-packages/zope/__init__.so
+/usr/lib/python312.zip
+/usr/lib/x86_64-linux-gnu/gconv/gconv-modules.cache
+/usr/local/bin/python3
+/usr/local/lib/python3.12/dist-packages
+/usr/local/sbin/python3
+/usr/pyvenv.cfg
+/usr/sbin/python3
+/usr/share/locale/locale.alias
+mydir/file1.txt
 
-==== CHOWN OPERATIONS ====
+==== EXEC ====
 
+/usr/bin/python3
 
-==== SETUID CALLS ====
-
-
-==== SETGID CALLS ====
+==== PROCESS ====
 
 
 ==== NETWORK CONNECT ====
 
-connect
 socket
 
 ==== NETWORK BIND ====
 
 bind
 
-==== MOUNT CALLS ====
+==== IPC ====
+
+fcntl
+ioctl
+mmap
+
+==== MOUNT ====
 
 
-==== PRIVILEGED SYSCALLS ====
+==== PRIVILEGED ====
 ```
